@@ -5,10 +5,6 @@ from GCL.models import get_sampler
 
 
 def add_extra_mask(pos_mask, neg_mask=None, extra_pos_mask=None, extra_neg_mask=None):
-    if extra_pos_mask is not None and extra_neg_mask is not None:
-        #print('have both extra pos and neg')
-        return extra_pos_mask, extra_neg_mask
-    
     if extra_pos_mask is not None:
         pos_mask = torch.bitwise_or(pos_mask.bool(), extra_pos_mask.bool()).float()
     if extra_neg_mask is not None:
@@ -49,7 +45,7 @@ class DualBranchContrast(torch.nn.Module):
         self.kwargs = kwargs
 
     def forward(self, h1=None, h2=None, g1=None, g2=None, batch=None, h3=None, h4=None,
-                extra_pos_mask=None, extra_neg_mask=None):
+                extra_pos_mask=None, extra_neg_mask=None, **kwargs):
         if self.mode == 'L2L':
             assert h1 is not None and h2 is not None
             anchor1, sample1, pos_mask1, neg_mask1 = self.sampler(anchor=h1, sample=h2)
@@ -70,8 +66,9 @@ class DualBranchContrast(torch.nn.Module):
 
         pos_mask1, neg_mask1 = add_extra_mask(pos_mask1, neg_mask1, extra_pos_mask, extra_neg_mask)
         pos_mask2, neg_mask2 = add_extra_mask(pos_mask2, neg_mask2, extra_pos_mask, extra_neg_mask)
-        l1 = self.loss(anchor=anchor1, sample=sample1, pos_mask=pos_mask1, neg_mask=neg_mask1, **self.kwargs)
-        l2 = self.loss(anchor=anchor2, sample=sample2, pos_mask=pos_mask2, neg_mask=neg_mask2, **self.kwargs)
+
+        l1 = self.loss(anchor=anchor1, sample=sample1, pos_mask=pos_mask1, neg_mask=neg_mask1, **{**self.kwargs,**kwargs})
+        l2 = self.loss(anchor=anchor2, sample=sample2, pos_mask=pos_mask2, neg_mask=neg_mask2, **{**self.kwargs,**kwargs})
 
         return (l1 + l2) * 0.5
 

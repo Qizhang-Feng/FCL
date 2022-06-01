@@ -1,0 +1,1 @@
+nohup python main_ray.py --dataset_name dataset_name --sens_name age --conditional --debias --num_samples 100

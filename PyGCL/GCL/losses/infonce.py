@@ -34,25 +34,19 @@ class InfoNCESP(Loss):
         return loss.mean()
 
 class FairInfoNCE(Loss):
-    def __init__(self, tau, beta):
+    def __init__(self, tau):
         super(FairInfoNCE, self).__init__()
         self.tau = tau
-        self.beta = beta
-    
+
     def compute(self, anchor, sample, pos_mask, neg_mask, *args, **kwargs):
+        #print('in infonec loss...')
+        #print(pos_mask, neg_mask)
         sim = _similarity(anchor, sample) / self.tau
-        fair_sim = (pos_mask + neg_mask) + sim
-        
         exp_sim = torch.exp(sim) * (pos_mask + neg_mask)
-        
-        
-        z = kwargs['z']
-        fair_sim = _similarity(z, z) * self.beta
-        exp_fair = torch.exp(fair_sim) * (pos_mask + neg_mask)
-        
-        
-        exp_sim = exp_sim * fair_sim
-        
+        if 'fair_kernel' in kwargs:
+            fair_kernel = kwargs['fair_kernel']
+            exp_sim *= fair_kernel
+            #print('fair_kernel in fairloss\n', fair_kernel)
         log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True))
         loss = log_prob * pos_mask
         loss = loss.sum(dim=1) / pos_mask.sum(dim=1)

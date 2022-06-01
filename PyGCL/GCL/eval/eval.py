@@ -83,4 +83,5 @@ class BaseSKLearnEvaluator(BaseEvaluator):
             'macro_f1': test_macro,
             'acc': test_acc,
             'predictions': predictions,
+            'classifier': self.classifier,
         }
