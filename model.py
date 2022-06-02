@@ -50,8 +50,6 @@ class RES(nn.Module):
         
         self.project_head = nn.Sequential(
             nn.Linear(1000, 1000),
-            #nn.Linear(1000, 1000),
-            #nn.ReLU(inplace=True),
             nn.ReLU(inplace=True),
             nn.Linear(1000, 1000)
         )
@@ -72,15 +70,12 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
         self.layers = nn.Sequential(
             make_conv(input_dim, hidden_dim),
-            #nn.BatchNorm1d(hidden_dim),
             make_conv(hidden_dim, hidden_dim),
-            #nn.BatchNorm1d(hidden_dim)
         )
         
         
         self.project_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            #nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim)
         )

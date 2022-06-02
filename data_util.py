@@ -1,8 +1,8 @@
 from turtle import ycor
 import numpy as np
+import scipy.sparse as sp
 import torch
 import os
-import pickle
 from torch.utils.data import Dataset, DataLoader
 import urllib
 import os.path
@@ -11,7 +11,6 @@ import sklearn.preprocessing as preprocessing
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from collections import namedtuple
 from torchvision.datasets import CelebA
-from PIL import Image
 from torchvision import transforms
 
 RESIZE = 128
@@ -29,7 +28,7 @@ def get_samples(dataset, num=1000):
     return x, s
 
 def get_dataset(dataset_name, sens_name=None):
-    assert dataset_name in ['adult', 'crimes', 'celeba']
+    assert dataset_name in ['adult', 'crimes', 'celeba', 'pokecz', 'pokecn']
 
     if dataset_name == 'adult':
         assert sens_name != None
@@ -49,6 +48,114 @@ def get_dataset(dataset_name, sens_name=None):
         dataset = CelebA(root=os.path.join(dir_name, 'datasets'), split='train', download=False, transform=transform, target_transform=target_transform)
         setattr(dataset, 'sens_dim', 1)
         return dataset
+    
+    if dataset_name == 'pokecz':
+        
+        return
+    
+    if dataset_name == 'pokecn':
+        return
+
+'''
+if args.dataset == 'pokec_z':
+    dataset = 'region_job'
+else:
+    dataset = 'region_job_2'
+sens_attr = "AGE"
+predict_attr = "spoken_languages_indicator"
+sens_attr = 'region' # AGE
+predict_attr = 'I_am_working_in_field'#'spoken_languages_indicator'
+'''
+
+class Pokec(Dataset):
+    def __init__(self, dataset_name, sens_name, target_name='I_am_working_in_field') -> None:
+        super(Pokec, self).__init__()
+        adj, x, y, s= load_pokec(dataset=dataset_name, 
+                            sens_attr = sens_name,
+                            predict_attr='target_name', 
+                            path=os.path.join(dir_name, 'datasets', 'pokec'),
+                            sens_number=500,seed=19,test_idx=False)
+        self.adj = adj
+        self.x = torch.from_numpy(x).float()
+        self.y = torch.from_numpy(y).float() # size: B
+        self.s = torch.from_numpy(s).float()
+        self.s = self.s if len(self.s.shape) != 1 else torch.unsqueeze(self.s, 1)
+        self.sens_dim = self.s.shape[1]
+    
+    def __len__(self):
+        return self.y.shape[0]
+
+    def __getitem__(self, index):
+        return (self.x[index], [self.y[index], self.s[index]])
+
+def load_pokec(dataset,sens_attr,predict_attr, path, sens_number=500,seed=19,test_idx=False):
+    """Load data"""
+    print('Loading {} dataset from {}'.format(dataset,path))
+
+    idx_features_labels = pd.read_csv(os.path.join(path,"{}.csv".format(dataset)))
+    header = list(idx_features_labels.columns)
+    header.remove("user_id")
+
+    header.remove(sens_attr)
+    header.remove(predict_attr)
+
+
+    features = sp.csr_matrix(idx_features_labels[header], dtype=np.float32)
+    labels = idx_features_labels[predict_attr].values
+    
+
+    # build graph
+    idx = np.array(idx_features_labels["user_id"], dtype=int)
+    idx_map = {j: i for i, j in enumerate(idx)}
+    edges_unordered = np.genfromtxt(os.path.join(path,"{}_relationship.txt".format(dataset)), dtype=int)
+
+    edges = np.array(list(map(idx_map.get, edges_unordered.flatten())),
+                     dtype=int).reshape(edges_unordered.shape)
+    adj = sp.coo_matrix((np.ones(edges.shape[0]), (edges[:, 0], edges[:, 1])),
+                        shape=(labels.shape[0], labels.shape[0]),
+                        dtype=np.float32)
+    # build symmetric adjacency matrix
+    adj = adj + adj.T.multiply(adj.T > adj) - adj.multiply(adj.T > adj)
+
+    # features = normalize(features)
+    adj = adj + sp.eye(adj.shape[0])
+
+    features = torch.FloatTensor(np.array(features.todense()))
+    labels = torch.LongTensor(labels)
+    # adj = sparse_mx_to_torch_sparse_tensor(adj)
+
+    import random
+    random.seed(seed)
+    label_idx = np.where(labels>=0)[0]
+    random.shuffle(label_idx)
+
+    idx_train = label_idx[:int(0.5 * len(label_idx))]
+    idx_val = label_idx[int(0.5 * len(label_idx)):int(0.75 * len(label_idx))]
+    if test_idx:
+        idx_test = label_idx[int(0.5 * len(label_idx)):]
+        idx_val = idx_test
+    else:
+        idx_test = label_idx[int(0.75 * len(label_idx)):]
+
+    sens = idx_features_labels[sens_attr].values
+
+    sens_idx = set(np.where(sens >= 0)[0])
+    idx_test = np.asarray(list(sens_idx & set(idx_test)))
+    sens = torch.FloatTensor(sens)
+    idx_sens_train = list(sens_idx - set(idx_val) - set(idx_test))
+    random.seed(seed)
+    random.shuffle(idx_sens_train)
+    idx_sens_train = torch.LongTensor(idx_sens_train[:sens_number])
+
+
+    idx_train = torch.LongTensor(idx_train)
+    idx_val = torch.LongTensor(idx_val)
+    idx_test = torch.LongTensor(idx_test)
+    
+
+    # random.shuffle(sens_idx)
+    return adj, features, labels, sens
+    #return adj, features, labels, idx_train, idx_val, idx_test, sens,idx_sens_train
 
 class Crimes(Dataset):
     def __init__(self) -> None:
@@ -99,23 +206,23 @@ def read_dataset(name, label=None, sensitive_attribute=None, fold=None):
 
 
 def read_crimes(label='ViolentCrimesPerPop', sensitive_attribute='racepctblack', fold=1, scaler=True):
-    if not os.path.isfile(os.path.join(dir_name, 'datasets', 'communities.data')):
+    if not os.path.isfile(os.path.join(dir_name, 'datasets', 'crimes', 'communities.data')):
         urllib.request.urlretrieve(
             "http://archive.ics.uci.edu/ml/machine-learning-databases/communities/communities.data", 
-            os.path.join(dir_name, 'datasets', 'communities.data'))
+            os.path.join(dir_name, 'datasets', 'crimes', 'communities.data'))
         urllib.request.urlretrieve(
             "http://archive.ics.uci.edu/ml/machine-learning-databases/communities/communities.names",
-            os.path.join(dir_name, 'datasets', 'communities.names'))
+            os.path.join(dir_name, 'datasets', 'crimes', 'communities.names'))
 
     # create names
     names = []
-    with open(os.path.join(dir_name, 'datasets', 'communities.names'), 'r') as file:
+    with open(os.path.join(dir_name, 'datasets', 'crimes', 'communities.names'), 'r') as file:
         for line in file:
             if line.startswith('@attribute'):
                 names.append(line.split(' ')[1])
 
     # load data
-    data = pd.read_csv(os.path.join(dir_name, 'datasets', 'communities.data'), names=names, na_values=['?'])
+    data = pd.read_csv(os.path.join(dir_name, 'datasets', 'crimes', 'communities.data'), names=names, na_values=['?'])
 
     to_drop = ['state', 'county', 'community', 'fold', 'communityname']
     data.fillna(0, inplace=True)
@@ -192,13 +299,13 @@ def load_adult(nTrain=None, scaler=True, shuffle=False, sens_name='gender'):
     
     (14. label: <=50K, >50K)
     '''
-    if not os.path.isfile(os.path.join(dir_name, 'datasets', 'adult.data')):
+    if not os.path.isfile(os.path.join(dir_name, 'datasets', 'adult', 'adult.data')):
         urllib.request.urlretrieve(
             "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data", os.path.join(dir_name, 'datasets', 'adult.data'))
         urllib.request.urlretrieve(
             "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.test", os.path.join(dir_name, 'datasets', 'adult.test'))
     data = pd.read_csv(
-        os.path.join(dir_name, 'datasets', 'adult.data'),
+        os.path.join(dir_name, 'datasets', 'adult', 'adult.data'),
         names=[
             "Age", "workclass", "fnlwgt", "education", "education-num", "marital-status",
             "occupation", "relationship", "race", "gender", "capital gain", "capital loss",
@@ -206,7 +313,7 @@ def load_adult(nTrain=None, scaler=True, shuffle=False, sens_name='gender'):
             )
     len_train = len(data.values[:, -1])
     data_test = pd.read_csv(
-        os.path.join(dir_name, 'datasets', 'adult.test'),
+        os.path.join(dir_name, 'datasets', 'adult', 'adult.test'),
         names=[
             "Age", "workclass", "fnlwgt", "education", "education-num", "marital-status",
             "occupation", "relationship", "race", "gender", "capital gain", "capital loss",

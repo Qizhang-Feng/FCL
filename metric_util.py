@@ -104,7 +104,7 @@ def gdp(dataset, encoder_model, classifier,x,sens, hist_num = 100, task = 'class
     # check classifier type
     pred_func = classifier.predict if hasattr(classifier, 'predcit') else classifier.__call__
 
-    z = encoder_model.main_encoder.encode_project(x)
+    z = encoder_model.main_encoder.forward(x)#.encode_project(x)
     pred = np.expand_dims(pred_func(z).argmax(-1).detach().cpu().numpy(), axis=1) if task == 'classification' else torch.sigmoid(pred_func(z)).detach().cpu().numpy()# shape B * 1
 
 
