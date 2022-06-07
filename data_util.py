@@ -1,4 +1,6 @@
+import imp
 from turtle import ycor
+from GCL.augmentors.augmentor import Graph
 import numpy as np
 import scipy.sparse as sp
 import torch
@@ -13,25 +15,48 @@ from collections import namedtuple
 from torchvision.datasets import CelebA
 from torchvision import transforms
 
+
 RESIZE = 128
 
 # the dirname of this file
 dir_name = os.path.dirname(os.path.abspath(__file__))
 
+def normalize_(x):
+    if len(x.shape) == 1: # 1-D array
+        return MinMaxScaler().fit_transform(StandardScaler().fit_transform(np.expand_dims(x, axis=1)))
+    else:
+        return MinMaxScaler().fit_transform(StandardScaler().fit_transform(x))
+
 def get_samples(dataset, num=1000):
     dataloader = DataLoader(dataset, batch_size=num, shuffle=True, num_workers=4)
-    x, s = None, None
-    for _, data_batch in enumerate(dataloader):
-        x, ys = data_batch # x.shape: B x f, y.shape: B, s.shape: B x f
-        s = ys[1]
-        break
-    return x, s
+    if dataset.__class__.__name__ in ['Pokec']:
+        # graph data
+        edge_index, x, ys = None, None, None
+
+        for _, data_batch in enumerate(dataloader):
+            edge_index, x, ys = data_batch # x.shape: B x f, y.shape: B, s.shape: B x f
+            s = ys[1][0]
+            x = x[0]
+            edge_index = edge_index[0]
+            break
+        rand_idx = np.random.randint(0, x.shape[0], num)
+        g = Graph(x=x, edge_index=edge_index, edge_weights=None)
+        return g, s, rand_idx    
+    else:
+        x, s = None, None
+        for _, data_batch in enumerate(dataloader):
+            x, ys = data_batch # x.shape: B x f, y.shape: B, s.shape: B x f
+            s = ys[1]
+            break
+        g = Graph(x=x, edge_index=None, edge_weights=None)
+        return g, s
 
 def get_dataset(dataset_name, sens_name=None):
     assert dataset_name in ['adult', 'crimes', 'celeba', 'pokecz', 'pokecn']
 
     if dataset_name == 'adult':
         assert sens_name != None
+        assert sens_name in ['age', 'gender']
         return Adult(sens_name=sens_name)
 
     if dataset_name == 'crimes':
@@ -47,14 +72,20 @@ def get_dataset(dataset_name, sens_name=None):
         ])
         dataset = CelebA(root=os.path.join(dir_name, 'datasets'), split='train', download=False, transform=transform, target_transform=target_transform)
         setattr(dataset, 'sens_dim', 1)
+        setattr(dataset, 'input_dim', RESIZE)
         return dataset
     
     if dataset_name == 'pokecz':
-        
-        return
+        assert sens_name in ['age', 'region']
+        sens_name = 'AGE' if sens_name=='age' else sens_name
+        dataset = Pokec(dataset_name='region_job', sens_name=sens_name)
+        return dataset
     
     if dataset_name == 'pokecn':
-        return
+        assert sens_name in ['age', 'region']
+        sens_name = 'AGE' if sens_name=='age' else sens_name
+        dataset = Pokec(dataset_name='region_job_2', sens_name=sens_name)
+        return dataset
 
 '''
 if args.dataset == 'pokec_z':
@@ -62,31 +93,37 @@ if args.dataset == 'pokec_z':
 else:
     dataset = 'region_job_2'
 sens_attr = "AGE"
-predict_attr = "spoken_languages_indicator"
 sens_attr = 'region' # AGE
 predict_attr = 'I_am_working_in_field'#'spoken_languages_indicator'
 '''
 
 class Pokec(Dataset):
-    def __init__(self, dataset_name, sens_name, target_name='I_am_working_in_field') -> None:
+    def __init__(self, dataset_name, sens_name, target_name='spoken_languages_indicator') -> None: 
         super(Pokec, self).__init__()
-        adj, x, y, s= load_pokec(dataset=dataset_name, 
-                            sens_attr = sens_name,
-                            predict_attr='target_name', 
-                            path=os.path.join(dir_name, 'datasets', 'pokec'),
-                            sens_number=500,seed=19,test_idx=False)
-        self.adj = adj
+        adj, x, y, s, idx_train, idx_val, idx_test = load_pokec(dataset=dataset_name, # adj, features, labels, sens, idx_train, idx_val, idx_val
+                                                    sens_attr = sens_name,
+                                                    predict_attr=target_name, #  'I_am_working_in_field'(negative value in) 'spoken_languages_indicator'
+                                                    path=os.path.join(dir_name, 'datasets', 'pokec'),
+                                                    sens_number=500,seed=19,test_idx=False)
+
+        self.edge_index = torch.from_numpy(np.stack([adj.tocoo().row, adj.tocoo().col], axis=0)).long()
+        print('self.edge_index: ', self.edge_index.shape)
         self.x = torch.from_numpy(x).float()
-        self.y = torch.from_numpy(y).float() # size: B
+        self.y = torch.from_numpy(y).long() # size: B
         self.s = torch.from_numpy(s).float()
         self.s = self.s if len(self.s.shape) != 1 else torch.unsqueeze(self.s, 1)
         self.sens_dim = self.s.shape[1]
+
+        self.idx_train = idx_train
+        self.idx_val = idx_val
+        self.idx_test = idx_test
+        self.input_dim = self.x.shape[-1]
     
     def __len__(self):
-        return self.y.shape[0]
-
+        return 1 # only 1 large graph
+        
     def __getitem__(self, index):
-        return (self.x[index], [self.y[index], self.s[index]])
+        return (self.edge_index, self.x, [self.y, self.s])
 
 def load_pokec(dataset,sens_attr,predict_attr, path, sens_number=500,seed=19,test_idx=False):
     """Load data"""
@@ -102,6 +139,7 @@ def load_pokec(dataset,sens_attr,predict_attr, path, sens_number=500,seed=19,tes
 
     features = sp.csr_matrix(idx_features_labels[header], dtype=np.float32)
     labels = idx_features_labels[predict_attr].values
+    labels[np.where(labels > 0)] = 1 # transfer I_am_working_in_field into binary task
     
 
     # build graph
@@ -120,13 +158,13 @@ def load_pokec(dataset,sens_attr,predict_attr, path, sens_number=500,seed=19,tes
     # features = normalize(features)
     adj = adj + sp.eye(adj.shape[0])
 
-    features = torch.FloatTensor(np.array(features.todense()))
-    labels = torch.LongTensor(labels)
+    features = (np.array(features.todense()))
+    #labels = torch.LongTensor(labels)
     # adj = sparse_mx_to_torch_sparse_tensor(adj)
 
     import random
     random.seed(seed)
-    label_idx = np.where(labels>=0)[0]
+    label_idx = np.where(labels>=0)[0] # some label is -1 null
     random.shuffle(label_idx)
 
     idx_train = label_idx[:int(0.5 * len(label_idx))]
@@ -141,20 +179,16 @@ def load_pokec(dataset,sens_attr,predict_attr, path, sens_number=500,seed=19,tes
 
     sens_idx = set(np.where(sens >= 0)[0])
     idx_test = np.asarray(list(sens_idx & set(idx_test)))
-    sens = torch.FloatTensor(sens)
+    #sens = torch.FloatTensor(sens)
     idx_sens_train = list(sens_idx - set(idx_val) - set(idx_test))
     random.seed(seed)
     random.shuffle(idx_sens_train)
     idx_sens_train = torch.LongTensor(idx_sens_train[:sens_number])
 
-
-    idx_train = torch.LongTensor(idx_train)
-    idx_val = torch.LongTensor(idx_val)
-    idx_test = torch.LongTensor(idx_test)
-    
-
     # random.shuffle(sens_idx)
-    return adj, features, labels, sens
+    features = normalize_(features)
+    sens = normalize_(sens)
+    return adj, features, labels, sens, idx_train, idx_val, idx_test
     #return adj, features, labels, idx_train, idx_val, idx_test, sens,idx_sens_train
 
 class Crimes(Dataset):
@@ -166,6 +200,8 @@ class Crimes(Dataset):
         self.s = torch.from_numpy(s).float()
         self.s = self.s if len(self.s.shape) != 1 else torch.unsqueeze(self.s, 1)
         self.sens_dim = self.s.shape[1]
+
+        self.input_dim = self.x.shape[-1]
     
     def __len__(self):
         return self.y.shape[0]
@@ -184,6 +220,8 @@ class Adult(Dataset):
         self.s = torch.from_numpy(s.values).float() if sens_name == 'age' else torch.from_numpy(s.values)
         self.s = self.s if len(self.s.shape) != 1 else torch.unsqueeze(self.s, 1)
         self.sens_dim = self.s.shape[1]
+
+        self.input_dim = self.x.shape[-1]
 
     def __len__(self):
         return len(self.y)

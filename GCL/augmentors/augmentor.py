@@ -13,7 +13,12 @@ class Graph(NamedTuple):
     def unfold(self) -> Tuple[torch.FloatTensor, torch.LongTensor, Optional[torch.FloatTensor]]:
         return self.x, self.edge_index, self.edge_weights
 
-
+    def to(self, device):
+        x = self.x.to(device)
+        edge_index = self.edge_index if self.edge_index is None else self.edge_index.to(device)
+        edge_weights = self.edge_weights if self.edge_weights is None else self.edge_weights.to(device)
+        return Graph(x, edge_index, edge_weights)
+        
 class Augmentor(ABC):
     """Base class for graph augmentors."""
     def __init__(self):

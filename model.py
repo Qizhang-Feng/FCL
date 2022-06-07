@@ -2,14 +2,19 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torchvision.models import resnet18
-
-
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+from torch_geometric.nn import GCNConv
 
 def make_conv(in_dim, out_dim):
     return nn.Sequential(nn.Linear(in_dim, out_dim), nn.BatchNorm1d(out_dim), nn.ReLU(), nn.Linear(out_dim, out_dim))
 
+
+def make_project_head(hidden_dim):
+    project_head = nn.Sequential(
+            nn.Linear(hidden_dim, int(hidden_dim)),
+            #nn.ReLU(inplace=True),
+            #nn.Linear(hidden_dim, hidden_dim)
+        )
+    return project_head
 
 def drop_feature(x: torch.Tensor, drop_prob: float) -> torch.Tensor:
     return F.dropout(x, drop_prob) * (1 - drop_prob)
@@ -34,12 +39,24 @@ class Encoder(nn.Module):
         if 'adv_model' in kwargs:
             self.adv_model = kwargs['adv_model']
         
-    def forward(self, x):
-        x1 = self.augmentor(x)
-        x2 = self.augmentor(x)
-        #print(x1.shape, x2.shape)
-        g1, g2 = self.main_encoder.encode_project(x1), self.main_encoder.encode_project(x2)
-        return (g1, g2)
+    def forward(self, g):
+        x,  edge_index, edge_weights= g.x, g.edge_index, g.edge_weights
+        if edge_index is not None:
+            g1, edge_index1, edge_weights1 = self.augmentor(x,  edge_index, edge_weights)
+            g2, edge_index2, edge_weights2 = self.augmentor(x,  edge_index, edge_weights)
+            z1 = self.main_encoder.encode_project(g1, edge_index1, edge_weights1)
+            z2 = self.main_encoder.encode_project(g2, edge_index2, edge_weights2)
+        else:
+            g1 = self.augmentor(x) 
+            g2 = self.augmentor(x) 
+            z1 = self.main_encoder.encode_project(g1)
+            z2 = self.main_encoder.encode_project(g2)
+            
+        return (z1, z2)
+
+    def main_encode_project(self, g):
+        x,  edge_index, edge_weights = g.x, g.edge_index, g.edge_weights
+        return self.main_encoder.encode_project(x,  edge_index, edge_weights)
 
 
 class RES(nn.Module):
@@ -48,20 +65,16 @@ class RES(nn.Module):
         self.layers = resnet18()
         
         
-        self.project_head = nn.Sequential(
-            nn.Linear(1000, 1000),
-            nn.ReLU(inplace=True),
-            nn.Linear(1000, 1000)
-        )
+        self.project_head = make_project_head(1000)
         
-    def forward(self, x):
+    def forward(self, x, edge_index=None, edge_weights=None):
         return self.layers(x)
     
     def project(self, z):
         return self.project_head(z)
         
-    def encode_project(self, x):
-        return self.project_head(self.layers(x))
+    def encode_project(self, x, edge_index=None, edge_weights=None):
+        return self.project_head(self.forward(x))
 
 
 # data augmented before feed in MLP
@@ -74,20 +87,16 @@ class MLP(nn.Module):
         )
         
         
-        self.project_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
+        self.project_head =make_project_head(hidden_dim)
         
-    def forward(self, x):
+    def forward(self, x, edge_index=None, edge_weights=None):
         return self.layers(x)
     
     def project(self, z):
         return self.project_head(z)
         
-    def encode_project(self, x):
-        return self.project_head(self.layers(x))
+    def encode_project(self, x, edge_index=None, edge_weights=None):
+        return self.project_head(self.forward(x))
 
 class Adv_sens(nn.Module):
     def __init__(self, sens_num, hidden_dim):
@@ -100,3 +109,31 @@ class Adv_sens(nn.Module):
 
     def forward(self, x):
         return self.network(x)
+
+
+class GConv(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers):
+        super(GConv, self).__init__()
+        self.layers = torch.nn.ModuleList()
+        self.activation = nn.PReLU(hidden_dim)
+
+        for i in range(num_layers):
+            if i == 0:
+                self.layers.append(GCNConv(input_dim, hidden_dim))
+            else:
+                self.layers.append(GCNConv(hidden_dim, hidden_dim))
+
+        self.project_head = make_project_head(hidden_dim)
+
+    def forward(self, x, edge_index=None, edge_weights=None):
+        z = x
+        for conv in self.layers:
+            z = conv(z, edge_index, edge_weights)
+            z = self.activation(z)
+        return z
+
+    def project(self, z):
+        return self.project_head(z)
+        
+    def encode_project(self, x, edge_index=None, edge_weights=None):
+        return self.project_head(self.forward(x, edge_index, edge_weights))

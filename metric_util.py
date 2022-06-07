@@ -33,6 +33,14 @@ def cos_kernel(anchor, sample, tempreture=1.0):
     cos_sim = _similarity(anchor, sample)/tempreture
     return torch.exp(cos_sim)
 
+def normalize_cos_kernel(anchor, sample, tempreture=1.0):
+    anchor = anchor.float()
+    sample = sample.float()
+    cos_sim = _similarity(anchor, sample)
+    cos_sim -= torch.diagonal(cos_sim).repeat(cos_sim.shape[0],1)
+    cos_sim /= tempreture
+    return torch.exp(cos_sim)
+
 #@torch.no_grad()
 def abs_kernel(anchor, sample, tempreture=1.0):
     # anchor, sample shape: B x f
@@ -40,6 +48,16 @@ def abs_kernel(anchor, sample, tempreture=1.0):
     anchor = anchor.float()
     sample = sample.float()
     abs_sim = -torch.abs(anchor.repeat(1,B) - sample.repeat(1,B).T)/tempreture
+    return torch.exp(abs_sim)
+
+def normalize_abs_kernel(anchor, sample, tempreture=1.0):
+    # anchor, sample shape: B x f
+    B = anchor.size(0)
+    anchor = anchor.float()
+    sample = sample.float()
+    abs_sim = -torch.abs(anchor.repeat(1,B) - sample.repeat(1,B).T)
+    abs_sim -= torch.diagonal(abs_sim).repeat(abs_sim.shape[0],1)
+    abs_sim /= tempreture
     return torch.exp(abs_sim)
 
 def sigmoid_kernel(anchor, sample, tempreture=1.0):
@@ -87,59 +105,64 @@ def cls_dp(x_0: torch.FloatTensor, x_1: torch.FloatTensor, encoder_model, classi
     return dp
 
 @torch.no_grad()
-def gdp(dataset, encoder_model, classifier,x,sens, hist_num = 100, task = 'classification'):
+def gdp(encoder_model, classifier, g, sens, sample_index, hist_num = 100, task = 'classification'):
     '''
     :para x: input data
     :para sens: sensitive feature, continuous field, shape B x f
     '''
     assert task in ['classification', 'regression']
-    device = next(encoder_model.parameters()).device
-    encoder_model = encoder_model.to(device)
-    x = x.to(device)
-    sens = (sens.numpy()) # shape B x 1
-    encoder_model.eval()
-    classifier.to(device)
-    classifier.eval()
+    with torch.no_grad():
+        device = next(encoder_model.parameters()).device
+        encoder_model = encoder_model.to(device)
+        g = g.to(device)
+        sens = (sens.numpy()) # shape B x 1
+        encoder_model.eval()
+        classifier.to(device)
+        classifier.eval()
 
-    # check classifier type
-    pred_func = classifier.predict if hasattr(classifier, 'predcit') else classifier.__call__
+        # check classifier type
+        pred_func = classifier.predict if hasattr(classifier, 'predcit') else classifier.__call__
 
-    z = encoder_model.main_encoder.forward(x)#.encode_project(x)
-    pred = np.expand_dims(pred_func(z).argmax(-1).detach().cpu().numpy(), axis=1) if task == 'classification' else torch.sigmoid(pred_func(z)).detach().cpu().numpy()# shape B * 1
+        z = encoder_model.main_encode_project(g)
+        if g.edge_index is not None: # graph data
+            z = z[sample_index]
+            sens = sens[sample_index]
 
-
-
-    sens_max = np.max(sens) + 1e-5
-    sens_min = np.min(sens)
-
-    bin_idx = np.squeeze(((sens - sens_min)/(sens_max - sens_min) * hist_num // 1).astype('int'))
-    n_values = np.max(bin_idx) + 1
-    one_hot_bin_idx = np.eye(n_values)[bin_idx] # shape B * b
-    
-    #plt.scatter(bin_idx, pred.T)
-    #plt.show()
+        pred = np.expand_dims(pred_func(z).argmax(-1).detach().cpu().numpy(), axis=1) if task == 'classification' else torch.sigmoid(pred_func(z)).detach().cpu().numpy()# shape B * 1
 
 
-    gdp_hist = np.sum(np.abs(np.mean(pred*one_hot_bin_idx, axis=0) - np.mean(pred) * np.mean(one_hot_bin_idx, axis=0)))
 
-    test_sol = 1.0/hist_num
-    x_appro = torch.arange(test_sol, 1-test_sol, test_sol).to(device)
-    KDE_FAIR = kde_fair(x_appro)
-    # transfer to flat torch.tensor
-    gdp_kernel =  KDE_FAIR.forward(torch.tensor(pred).flatten().float(), torch.tensor(sens).flatten(), device).detach().cpu().numpy()
+        sens_max = np.max(sens) + 1e-5
+        sens_min = np.min(sens)
+
+        bin_idx = np.squeeze(((sens - sens_min)/(sens_max - sens_min) * hist_num // 1).astype('int'))
+        n_values = np.max(bin_idx) + 1
+        one_hot_bin_idx = np.eye(n_values)[bin_idx] # shape B * b
+        
+        #plt.scatter(bin_idx, pred.T)
+        #plt.show()
 
 
-    # max difference
-    
-    bin_num = np.sum(one_hot_bin_idx, axis=0)
-    bin_sum = np.sum(pred*one_hot_bin_idx, axis=0)
-    
-    bin_mean_ = []
-    for i in range(bin_num.shape[-1]):
-        if bin_num[i] != 0.0:
-            bin_mean_.append(bin_sum[i] / bin_num[i])
+        gdp_hist = np.sum(np.abs(np.mean(pred*one_hot_bin_idx, axis=0) - np.mean(pred) * np.mean(one_hot_bin_idx, axis=0)))
 
-    gdp_max = np.max(bin_mean_) - np.min(bin_mean_)
+        test_sol = 1.0/hist_num
+        x_appro = torch.arange(test_sol, 1-test_sol, test_sol).to(device)
+        KDE_FAIR = kde_fair(x_appro)
+        # transfer to flat torch.tensor
+        gdp_kernel =  KDE_FAIR.forward(torch.tensor(pred).flatten().float(), torch.tensor(sens).flatten(), device).detach().cpu().numpy()
+
+
+        # max difference
+        
+        bin_num = np.sum(one_hot_bin_idx, axis=0)
+        bin_sum = np.sum(pred*one_hot_bin_idx, axis=0)
+        
+        bin_mean_ = []
+        for i in range(bin_num.shape[-1]):
+            if bin_num[i] != 0.0:
+                bin_mean_.append(bin_sum[i] / bin_num[i])
+
+        gdp_max = np.max(bin_mean_) - np.min(bin_mean_)
     return gdp_hist, gdp_kernel, gdp_max
 
 
